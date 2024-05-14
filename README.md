@@ -10,7 +10,8 @@
  ## Models
  - Pendulum
 
- # Pre-requisites 
+ ## Pre-requisites 
  Before running the model, you'll need to install the required packages. 
+ (I recommend setting up a virtual environment in this directory first)
  You can do by running the following command in the main directory:
  `pip install -r requirements.txt`
