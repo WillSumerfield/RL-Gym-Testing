@@ -1,11 +1,9 @@
 """
-Choose which solution to run, and whether to train it, or watch the best version.
+Choose which model to run, and whether to train it, or watch the best version.
 """
 
 import argparse
-import gym
 import torch
-
 import agents
 
 
@@ -38,7 +36,7 @@ if __name__ == "__main__":
     # Find the right agent
     agent: agents.Agent = None
     if args.environment == "Pendulum":
-        agent = agents.Pendulum(device, args.train)
+        agent = agents.Pendulum(device, args.train, render_freq=10)
 
     # Check if we picked a valid environment
     if agent is None:
