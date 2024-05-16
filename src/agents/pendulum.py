@@ -48,6 +48,7 @@ import numpy as np
 import os
 import random
 import pygame
+import pandas as pd
 from PIL import Image
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -64,11 +65,19 @@ class Pendulum(Agent):
 
     ENVIRONMENT_NAME = "Pendulum-v1"
 
-    SAVED_MODELS_PATH = "/src/saved_models/pendulum"
-    ACTOR_MODEL_NAME = "actor.pt"
+    SAVE_PATH = "/src/saves/pendulum"
+    ACTOR_MODEL_NAME = "actor"
+    CRITIC_MODEL_NAME = "critic"
 
     DISPLAY_SECONDS_PER_FRAME = 1/60
     DISPLAY_SIZE = (500, 500)
+
+    DEFAULT_EPISODES = 50
+    DEFAULT_BATCH_SIZE = 128
+    DEFAULT_HIDDEN_SIZES = [256,]
+    DEFAULT_NOISE = 0.1
+    DEFAULT_GAMMA = 0.99
+    DEFAULT_TAU = 1e-2
 
 
     # Transform the action space to be between -1 and 1. This makes the NN's work easier!
@@ -90,21 +99,24 @@ class Pendulum(Agent):
         # Takes in actions as inputs, outputs an acation. Used to choose which actions to take during a run.
         class Actor(nn.Module):
             
-            def __init__(self, input_size, hidden_size, output_size, learning_rate=1e-4):
+            def __init__(self, device, input_size, hidden_sizes, output_size, learning_rate=1e-4):
                 super(Pendulum.DDPG.Actor, self).__init__()
 
+                self.hidden_count = len(hidden_sizes)
+
                 # Create the model
-                self.linear1 = nn.Linear(input_size, hidden_size)
-                self.linear2 = nn.Linear(hidden_size, hidden_size)
-                self.linear3 = nn.Linear(hidden_size, output_size)
+                self.input = nn.Linear(input_size, hidden_sizes[0]).to(device)
+                self.hidden_layers = [nn.Linear(hidden_sizes[i], hidden_sizes[i+1]).to(device) for i in range(self.hidden_count-1)]
+                self.output = nn.Linear(hidden_sizes[-1], output_size).to(device)
 
                 # Set the optimizer
                 self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
 
             def forward(self, state) -> torch.Tensor:
-                x = F.relu(self.linear1(state))
-                x = F.relu(self.linear2(x))
-                x = torch.tanh(self.linear3(x))
+                x = F.relu(self.input(state))
+                for hidden_layer in self.hidden_layers:
+                    x = F.relu(hidden_layer(x))
+                x = torch.tanh(self.output(x))
 
                 return x
 
@@ -112,13 +124,13 @@ class Pendulum(Agent):
         # Evaluates the quality of state-action pairs. Used for training the actor.
         class Critic(nn.Module):
                         
-            def __init__(self, input_size, hidden_size, output_size, learning_rate=1e-3):
+            def __init__(self, device, input_size, hidden_sizes, output_size, learning_rate=1e-3):
                 super(Pendulum.DDPG.Critic, self).__init__()
 
                 # Create the model
-                self.linear1 = nn.Linear(input_size, hidden_size)
-                self.linear2 = nn.Linear(hidden_size, hidden_size)
-                self.linear3 = nn.Linear(hidden_size, output_size)
+                self.input = nn.Linear(input_size, hidden_sizes[0]).to(device)
+                self.hidden_layers = [nn.Linear(hidden_sizes[i], hidden_sizes[i+1]).to(device) for i in range(len(hidden_sizes)-1)]
+                self.output = nn.Linear(hidden_sizes[-1], output_size).to(device)
 
                 # Set the optimizer
                 self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
@@ -129,9 +141,10 @@ class Pendulum(Agent):
 
             def forward(self, state, action) -> torch.Tensor:
                 x = torch.cat([state, action], 1)
-                x = F.relu(self.linear1(x))
-                x = F.relu(self.linear2(x))
-                x = self.linear3(x)
+                x = F.relu(self.input(x))
+                for hidden_layer in self.hidden_layers:
+                    x = F.relu(hidden_layer(x))
+                x = self.output(x)
 
                 return x
 
@@ -143,42 +156,33 @@ class Pendulum(Agent):
                 dest_param.data.copy_(tau*source_param.data + (1.0-tau)*dest_param.data)
 
 
-        def __init__(self, device: torch.device, state_space: int, action_space: int, hidden_size=256, gamma=0.99, tau=1e-2, test=False):
+        def __init__(self, device: torch.device, state_space: int, action_space: int,  hidden_sizes: list, gamma: float, tau: float, train=True):
             
             self.device = device
             self.state_space = state_space
             self.action_space = action_space
-
-            # Load the best agent from the previous training set
-            if test:
-                
-                # Load the saved actor and critic models
-                model_path = os.getcwd() + Pendulum.SAVED_MODELS_PATH
-                if not os.path.exists(model_path + '/' + Pendulum.ACTOR_MODEL_NAME):
-                    raise Exception("There are no saved models. Run in training mode first.")
-                self.actor = Pendulum.DDPG.Actor(input_size=state_space, hidden_size=hidden_size, output_size=action_space).to(device)
-                self.actor.load_state_dict(torch.load(model_path + '/' + Pendulum.ACTOR_MODEL_NAME))
+            self.hidden_sizes = hidden_sizes
 
             # Create a new actors and critics
-            else:
+            if train:
 
                 # Randomly Initialize actor and critic networks
                 """Takes in states and outputs actions - the model's best guess about what actions will bring the greatest reward. Also called an "action policy"."""
-                self.actor = Pendulum.DDPG.Actor(input_size=state_space, hidden_size=hidden_size, output_size=action_space).to(device)
+                self.actor = Pendulum.DDPG.Actor(device, input_size=state_space, hidden_sizes=hidden_sizes, output_size=action_space)
                 """Takes in states and actions, and predicts the expected reward for each action (just one in our case), which is called a Q(uality) value."""
-                self.critic = Pendulum.DDPG.Critic(input_size=state_space+action_space, hidden_size=hidden_size, output_size=action_space).to(device)
+                self.critic = Pendulum.DDPG.Critic(device, input_size=state_space+action_space, hidden_sizes=hidden_sizes, output_size=action_space)
 
                 # Create target actor and target critic networks. In the beginning, they are copies of the actor and critic
                 """The actor we train, but don't use for decision making. We update this whenever we update the normal actor, but just a little bit.
                 This ensures that the target actor remains up to date, but isn't as 'jumpy' as the regular actor. This actions we get from this model are 
                 what makes DDPG an off-policy model."""
-                self.target_actor = Pendulum.DDPG.Actor(input_size=state_space, hidden_size=hidden_size, output_size=action_space).to(device)
+                self.target_actor = Pendulum.DDPG.Actor(device, input_size=state_space, hidden_sizes=hidden_sizes, output_size=action_space)
                 Pendulum.DDPG.copy_model(self.actor, self.target_actor)
     
                 """The critic we train, but don't use for updating the actor. We update this whenever we update the normal critic, but just a little bit.
                 This ensures that the target critic remains up to date, but isn't as 'jumpy' as the regular critic. This Q values we get from this model are 
                 what makes DDPG an off-policy model."""
-                self.target_critic = Pendulum.DDPG.Critic(input_size=state_space+action_space, hidden_size=hidden_size, output_size=action_space).to(device)
+                self.target_critic = Pendulum.DDPG.Critic(device, input_size=state_space+action_space, hidden_sizes=hidden_sizes, output_size=action_space)
                 Pendulum.DDPG.copy_model(self.critic, self.target_critic)
 
                 # The discount factor on future rewards - changes how much we value expected future reward in the current state.
@@ -243,25 +247,34 @@ class Pendulum(Agent):
             # Update the target networks a little based on the current models
             Pendulum.DDPG.copy_model(self.actor, self.target_actor, tau=self.tau)
             Pendulum.DDPG.copy_model(self.critic, self.target_critic, tau=self.tau)
-            
-
-        def save_model(self):
-            model_path = os.getcwd() + Pendulum.SAVED_MODELS_PATH
-            if not os.path.exists(model_path):
-                os.makedirs(model_path)
-            torch.save(self.target_actor.state_dict(), model_path + '/' + Pendulum.ACTOR_MODEL_NAME)
 
 
-    def __init__(self, device: torch.device, train: bool, episodes: int=50, noise: float=0.05, batch_size: int=128, render_freq: int=-1):
+    def __init__(self, device: torch.device, train: bool, param_dict: dict, verbose: bool=True):
+
+        self.param_dict = param_dict
 
         self.device = device
-        self.noise = noise
+
+        self.verbose = verbose
+
+        self.model_name = self.get_parameter("model_name", "")
+        self.model_name = self.model_name + "_" if self.model_name else ""
+
+        """The replay buffer holds memories of all past transitions. We sample this randomly to update the model, which helps avoid redundancy and bias
+        introduced by sequential transitions which are super similar."""
+        self.replay_buffer = []
+
+        # Random noise applied to the actions, to induce exploration
+        self.noise = self.get_parameter("noise", Pendulum.DEFAULT_NOISE)
 
         # How many episodes between renders
-        self.render_freq = render_freq
+        self.render_freq = self.get_parameter("render_freq", None)
 
-        # Initialize the display
-        if self.render_freq > 0 or not train:
+        # The number and size of hidden layers in the model
+        self.hidden_sizes = self.get_parameter("hidden_sizes", Pendulum.DEFAULT_HIDDEN_SIZES)
+
+        # Initialize the display    
+        if self.render_freq is not None or not train:
             self.do_render = True
             pygame.init()
             self.display = pygame.display.set_mode(self.DISPLAY_SIZE, 0, 32)
@@ -270,59 +283,64 @@ class Pendulum(Agent):
         else:
             self.do_render = False
 
-        # Train the model
-        if train:
+        # The number of games to train the model on
+        self.episodes = self.get_parameter("episodes", Pendulum.DEFAULT_EPISODES)
 
-            # The number of games to train the model on
-            self.episodes = episodes 
+        # The number of memories to train the model on each update.
+        self.batch_size = self.get_parameter("batch_size", Pendulum.DEFAULT_BATCH_SIZE)
 
-            """The replay buffer holds memories of all past transitions. We sample this randomly to update the model, which helps avoid redundancy and bias
-            introduced by sequential transitions which are super similar."""
-            self.replay_buffer = []
+        # The amount of weight places on future rewards
+        self.gamma = self.get_parameter("gamma", Pendulum.DEFAULT_GAMMA)
 
-            # The number of memories to train the model on each update.
-            self.batch_size = batch_size
+        # The amount to update the target models
+        self.tau = self.get_parameter("tau", Pendulum.DEFAULT_TAU)
+
+        # The model our agent trains on
+        self.env: gym.Env = Pendulum.NormalizedEnv(gym.make(Pendulum.ENVIRONMENT_NAME, render_mode="rgb_array", disable_env_checker=True))
+
+        # The agent which interacts with and learns from the environment
+        self.agent = Pendulum.DDPG(self.device, self.env.observation_space.shape[0], self.env.action_space.shape[0], self.hidden_sizes, self.gamma, self.tau, train=train)
+
+        # If the agent is in testing mode, load the saved model
+        if not train:
+            self.load_model()
 
 
-    def train(self) -> None:
-        
-        # Create the environment
-        env: gym.Env = Pendulum.NormalizedEnv(gym.make(Pendulum.ENVIRONMENT_NAME, render_mode="rgb_array", disable_env_checker=True))
-
-        # Create the agent
-        agent = Pendulum.DDPG(self.device, env.observation_space.shape[0], env.action_space.shape[0])
+    # Create and train a DDPG model from scratch. Returns the total reward attained.
+    def train(self) -> pd.DataFrame:
 
         # Record the reward, so that we can graph the changes in reward over time.
-        total_rewards = np.array([])
+        reward_df = pd.DataFrame(columns=["episode", "reward"])
 
         # Play the game for a number of episodes
         for episode in range(self.episodes):
 
             # Display the epsiode progress
-            print(f"Episode: {episode+1}/{self.episodes} = {100*(episode+1)/self.episodes}%", end='\r')
+            if self.verbose:
+                print(f"Episode: {episode+1}/{self.episodes} = {100*(episode+1)/self.episodes}%", end='\r')
 
             # Reset the state of the environment so we can play it again
-            state, info = env.reset()
+            state, info = self.env.reset()
 
             # Only render episodes occasionally
-            render_episode = self.do_render and (episode % self.render_freq == 0)
+            render_episode = self.do_render and ((episode+1) % self.render_freq == 0)
 
             # Make decisions each time-step of the game
             game_over: bool = False
             while not game_over:
 
                 # Select an action deterministically, but use a little noise to do exploration.
-                action = agent.take_action(state)
+                action = self.agent.take_action(state)
                 action += np.random.normal(0, self.noise)
 
                 # Take the action in the environment, and observe the new state
-                next_state, reward, terminated, truncated, info = env.step(np.array([action]))
+                next_state, reward, terminated, truncated, info = self.env.step(np.array([action]))
                 next_state = np.array(next_state)
                 reward = np.array(reward)
 
                 # Display the game
                 if render_episode:
-                    image = env.render()
+                    image = self.env.render()
                     image = Image.fromarray(image, 'RGB')
                     image = pygame.image.fromstring(image.tobytes(), image.size, image.mode)
                     self.display.blit(image, (0, 0))
@@ -339,57 +357,38 @@ class Pendulum(Agent):
                 
                 # If the game ended, record the total reward to plot later
                 if game_over:
-                    total_rewards = np.append(total_rewards, reward)
+                    reward_df.loc[episode] = [episode, reward.item()]
 
                 # Update the actor and critic using the a random sample from the replay buffer. The random-ness avoids bias and keeps it sample-efficient.
                 if (len(self.replay_buffer) > self.batch_size):
-                    agent.update(random.sample(self.replay_buffer, self.batch_size))
+                    self.agent.update(random.sample(self.replay_buffer, self.batch_size))
 
                 # Now the next state is the current state
                 state = next_state
                 
-
-        # Save the actor and critic models when done training
-        agent.save_model()
-
-        # Tell the user we're done and the model is saved
-        print("\n\nFinished training and saved the model.\n")
-        
-        # Display how the reward changed over the epiodes
-        sns.lineplot(x=np.arange(len(total_rewards)), y=total_rewards)
-        plt.xlabel("Episode")
-        plt.ylabel("Total Reward")
-        plt.show()
+        return reward_df
 
 
     # Load the final model from the previous training run, and dipslay it playing the environment
     def test(self) -> None:
 
-        # Create the environment
-        env = Pendulum.NormalizedEnv(gym.make(Pendulum.ENVIRONMENT_NAME, render_mode="rgb_array", disable_env_checker=True))
-        state, info = env.reset()
-
-        # Load the model
-        agent = Pendulum.DDPG(self.device, env.observation_space.shape[0], env.action_space.shape[0], test=True)
-
-        # Let the user know that the game has begun
-        print("\nPlaying the game with the best model...")
+        state, info = self.env.reset()
 
         # Run the model until the environment 
         game_over: bool = False
         while not game_over:
 
             # Select an action. Only select the best one here, since we're showing off the model's capabilities
-            action = agent.take_action(state)
+            action = self.agent.take_action(state)
 
             # Take the action in the environment, and observe the new state
-            next_state, reward, terminated, truncated, info = env.step(action)
+            next_state, reward, terminated, truncated, info = self.env.step(action)
 
             # Now the next state is the current state
             state = next_state
 
             # Display the game
-            image = env.render()
+            image = self.env.render()
             image = Image.fromarray(image, 'RGB')
             image = pygame.image.fromstring(image.tobytes(), image.size, image.mode)
             self.display.blit(image, (0, 0))
@@ -400,8 +399,24 @@ class Pendulum(Agent):
 
             # If the game is over, exit.
             if terminated or truncated:
-                print("\nFinished the game!")
                 return
 
         return
     
+
+    def save_model(self):
+        save_path = os.getcwd() + Pendulum.SAVE_PATH
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        torch.save(self.agent.target_actor.state_dict(), save_path + '/' + self.model_name + Pendulum.ACTOR_MODEL_NAME + ".pt")
+        torch.save(self.agent.target_critic.state_dict(), save_path + '/' + self.model_name + Pendulum.CRITIC_MODEL_NAME + ".pt")
+
+
+    def load_model(self):
+        save_path = os.getcwd() + Pendulum.SAVE_PATH
+        if not os.path.exists(save_path + '/' + self.model_name + Pendulum.ACTOR_MODEL_NAME + '.pt'):
+            raise Exception("There are no saved models of the expected name. Run in training mode first with the same model-name parameter.")
+        self.agent.actor = Pendulum.DDPG.Actor(self.device, input_size=self.agent.state_space, hidden_sizes=self.agent.hidden_sizes, output_size=self.agent.action_space).to(self.device)
+        self.agent.actor.load_state_dict(torch.load(save_path + '/' + self.model_name + Pendulum.ACTOR_MODEL_NAME + '.pt'))
+        self.agent.critic = Pendulum.DDPG.Critic(self.device, input_size=self.agent.state_space+self.agent.action_space, hidden_sizes=self.agent.hidden_sizes, output_size=self.agent.action_space).to(self.device)
+        self.agent.critic.load_state_dict(torch.load(save_path + '/' + self.model_name + Pendulum.CRITIC_MODEL_NAME + '.pt'))
