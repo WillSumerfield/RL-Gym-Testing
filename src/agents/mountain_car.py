@@ -267,7 +267,7 @@ class MountainCar(Agent):
         self.tau = self.get_parameter("tau", MountainCar.DEFAULT_TAU)
 
         # How quickly the actor learns
-        self.learning_rate = self.get_parameter("learning_rate", MountainCar)
+        self.learning_rate = self.get_parameter("learning_rate", MountainCar.DEFAULT_LEARNING_RATE)
 
         # The model our agent trains on
         self.env: gym.Env = gym.make(MountainCar.ENVIRONMENT_NAME, render_mode=None if train else "human", disable_env_checker=True)
