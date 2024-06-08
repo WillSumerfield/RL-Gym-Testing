@@ -12,7 +12,8 @@ You can use the `--compare` option to obtain a graph displaying how changing a p
 Run `python main.py -h` for more information.
 
 ## Models
-- Pendulum
+- DDPG Pendulum 
+- DQN Mountain Car
 
 ## Pre-requisites 
 Before running the model, you'll need to install the required packages. 
