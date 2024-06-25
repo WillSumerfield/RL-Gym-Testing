@@ -252,7 +252,10 @@ class MountainCar(Agent):
         self.hidden_sizes = self.get_parameter("hidden_sizes", MountainCar.DEFAULT_HIDDEN_SIZES)
 
         # The number of games to train the model on
-        self.episodes = self.get_parameter("episodes", MountainCar.DEFAULT_EPISODES)
+        if train:
+            self.episodes = self.get_parameter("episodes", MountainCar.DEFAULT_EPISODES)
+        else:
+            self.episodes = self.get_parameter("episodes", 1)
 
         # The number of memories to train the model on each update.
         self.batch_size = self.get_parameter("batch_size", MountainCar.DEFAULT_BATCH_SIZE)
@@ -270,13 +273,14 @@ class MountainCar(Agent):
         self.learning_rate = self.get_parameter("learning_rate", MountainCar.DEFAULT_LEARNING_RATE)
 
         # The model our agent trains on
-        self.env: gym.Env = gym.make(MountainCar.ENVIRONMENT_NAME, render_mode=None if train else "human", disable_env_checker=True)
+        self.env: gym.Env = gym.make(MountainCar.ENVIRONMENT_NAME, render_mode=None if train else "rgb_array", disable_env_checker=True)
 
         # The agent which interacts with and learns from the environment
         self.agent = MountainCar.DQN(self.device, self.env.observation_space.shape[0], self.env.action_space.n, self.hidden_sizes, self.epsilon, self.learning_rate, self.gamma, self.tau, train=train)
 
         # If the agent is in testing mode, load the saved model
         if not train:
+            self.env = gym.wrappers.RecordVideo(self.env, os.getcwd() + MountainCar.SAVE_PATH, episode_trigger=lambda x: True, name_prefix="test_video")
             self.load_model()
             self.agent.actor.eval()
 
@@ -389,26 +393,29 @@ class MountainCar(Agent):
     # Load the final model from the previous training run, and dipslay it playing the environment
     def test(self) -> None:
 
-        state, info = self.env.reset()
+        # Record the specified number of episodes
+        for episode in range(self.episodes):
 
-        # Run the model until the environment ends
-        game_over: bool = False
-        step = 0
-        while not game_over:
-            step += 1
+            state, info = self.env.reset()
 
-            # Select an action. Only select the best one here, since we're showing off the model's capabilities
-            action = self.agent.take_action(self.env, state)
+            # Run the model until the environment ends
+            game_over: bool = False
+            while not game_over:
 
-            # Take the action in the environment, and observe the new state
-            next_state, reward, terminated, truncated, info = self.env.step(action)
+                # Record the video
+                self.env.render()
 
-            # Now the next state is the current state
-            state = next_state
+                # Select an action. Only select the best one here, since we're showing off the model's capabilities
+                action = self.agent.take_action(self.env, state)
 
-            # If the game is over, exit.
-            if terminated or truncated:
-                return
+                # Take the action in the environment, and observe the new state
+                next_state, reward, terminated, truncated, info = self.env.step(action)
+
+                # Now the next state is the current state
+                state = next_state
+
+                # If the game is over, go to the next episode.
+                game_over =  terminated or truncated
 
         return
     

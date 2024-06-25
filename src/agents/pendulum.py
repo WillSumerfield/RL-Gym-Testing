@@ -47,9 +47,7 @@ import gymnasium as gym
 import numpy as np
 import os
 import random
-import pygame
 import pandas as pd
-from PIL import Image
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -69,7 +67,7 @@ class Pendulum(Agent):
 
     DEFAULT_EPISODES = 50
     DEFAULT_BATCH_SIZE = 128
-    DEFAULT_HIDDEN_SIZES = [64,32]
+    DEFAULT_HIDDEN_SIZES = [[64,32],[32,16]]
     DEFAULT_EPSILON = 0.1
     DEFAULT_LEARNING_RATE = 1e-4
     DEFAULT_GAMMA = 0.99
@@ -173,21 +171,21 @@ class Pendulum(Agent):
 
                 # Randomly Initialize actor and critic networks
                 """Takes in states and outputs actions - the model's best guess about what actions will bring the greatest reward. Also called an "action policy"."""
-                self.actor = Pendulum.DDPG.Actor(device, state_space, hidden_sizes, action_space, learning_rate)
+                self.actor = Pendulum.DDPG.Actor(device, state_space, hidden_sizes[0], action_space, learning_rate)
                 """Takes in states and actions, and predicts the expected reward for each action (just one in our case), which is called a Q(uality) value."""
-                self.critic = Pendulum.DDPG.Critic(device, state_space+action_space, hidden_sizes, action_space, learning_rate*10)
+                self.critic = Pendulum.DDPG.Critic(device, state_space+action_space, hidden_sizes[1], action_space, learning_rate*10)
 
                 # Create target actor and target critic networks. In the beginning, they are copies of the actor and critic
                 """The actor we train, but don't use for decision making. We update this whenever we update the normal actor, but just a little bit.
                 This ensures that the target actor remains up to date, but isn't as 'jumpy' as the regular actor. This actions we get from this model are 
                 what makes DDPG an off-policy model."""
-                self.target_actor = Pendulum.DDPG.Actor(device, state_space, hidden_sizes, action_space, learning_rate)
+                self.target_actor = Pendulum.DDPG.Actor(device, state_space, hidden_sizes[0], action_space, learning_rate)
                 Pendulum.DDPG.copy_model(self.actor, self.target_actor)
     
                 """The critic we train, but don't use for updating the actor. We update this whenever we update the normal critic, but just a little bit.
                 This ensures that the target critic remains up to date, but isn't as 'jumpy' as the regular critic. This Q values we get from this model are 
                 what makes DDPG an off-policy model."""
-                self.target_critic = Pendulum.DDPG.Critic(device, state_space+action_space, hidden_sizes, action_space, learning_rate)
+                self.target_critic = Pendulum.DDPG.Critic(device, state_space+action_space, hidden_sizes[1], action_space, learning_rate)
                 Pendulum.DDPG.copy_model(self.critic, self.target_critic)
 
         
@@ -233,7 +231,7 @@ class Pendulum(Agent):
             q_values = self.critic.forward(states, current_actions)
             policy_loss = -q_values.mean()
 
-            # Perform backpropigation on the policy loss to update the target actor
+            # Perform backpropigation on the policy loss to update the current actor
             self.actor.optimizer.zero_grad()
             policy_loss.backward()
             self.actor.optimizer.step()
@@ -273,7 +271,10 @@ class Pendulum(Agent):
         self.hidden_sizes = self.get_parameter("hidden_sizes", Pendulum.DEFAULT_HIDDEN_SIZES)
 
         # The number of games to train the model on
-        self.episodes = self.get_parameter("episodes", Pendulum.DEFAULT_EPISODES)
+        if train:
+            self.episodes = self.get_parameter("episodes", Pendulum.DEFAULT_EPISODES)
+        else:
+            self.episodes = self.get_parameter("episodes", 1)
 
         # The number of memories to train the model on each update.
         self.batch_size = self.get_parameter("batch_size", Pendulum.DEFAULT_BATCH_SIZE)
@@ -288,13 +289,14 @@ class Pendulum(Agent):
         self.tau = self.get_parameter("tau", Pendulum.DEFAULT_TAU)
 
         # The model our agent trains on
-        self.env: gym.Env = Pendulum.NormalizedEnv(gym.make(Pendulum.ENVIRONMENT_NAME, render_mode=None if train else "human", disable_env_checker=True))
+        self.env: gym.Env = Pendulum.NormalizedEnv(gym.make(Pendulum.ENVIRONMENT_NAME, render_mode=None if train else "rgb_array", disable_env_checker=True))
 
         # The agent which interacts with and learns from the environment
         self.agent = Pendulum.DDPG(self.device, self.env.observation_space.shape[0], self.env.action_space.shape[0], self.hidden_sizes, self.learning_rate, self.gamma, self.tau, train=train)
 
         # If the agent is in testing mode, load the saved model
         if not train:
+            self.env = gym.wrappers.RecordVideo(self.env, os.getcwd() + Pendulum.SAVE_PATH, episode_trigger=lambda x: True, name_prefix="test_video")
             self.load_model()
             self.agent.actor.eval()
 
@@ -358,24 +360,29 @@ class Pendulum(Agent):
     # Load the final model from the previous training run, and dipslay it playing the environment
     def test(self) -> None:
 
-        state, info = self.env.reset()
+        # Record the specified number of episodes
+        for episode in range(self.episodes):
 
-        # Run the model until the environment 
-        game_over: bool = False
-        while not game_over:
+            state, info = self.env.reset()
 
-            # Select an action. Only select the best one here, since we're showing off the model's capabilities
-            action = self.agent.take_action(state)
+            # Run the model until the environment 
+            game_over: bool = False
+            while not game_over:
 
-            # Take the action in the environment, and observe the new state
-            next_state, reward, terminated, truncated, info = self.env.step(action)
+                # Record the video
+                self.env.render()
 
-            # Now the next state is the current state
-            state = next_state
+                # Select an action. Only select the best one here, since we're showing off the model's capabilities
+                action = self.agent.take_action(state)
 
-            # If the game is over, exit.
-            if terminated or truncated:
-                return
+                # Take the action in the environment, and observe the new state
+                next_state, reward, terminated, truncated, info = self.env.step(action)
+
+                # Now the next state is the current state
+                state = next_state
+
+                # If the game is over, move onto the next episode.
+                game_over = terminated or truncated
 
         return
     
@@ -392,7 +399,7 @@ class Pendulum(Agent):
         save_path = os.getcwd() + Pendulum.SAVE_PATH
         if not os.path.exists(save_path + '/' + self.model_name + Pendulum.ACTOR_MODEL_NAME + '.pt'):
             raise Exception("There are no saved models of the expected name. Run in training mode first with the same model-name parameter.")
-        self.agent.actor = Pendulum.DDPG.Actor(self.device, self.agent.state_space, self.agent.hidden_sizes, self.agent.action_space, self.learning_rate).to(self.device)
+        self.agent.actor = Pendulum.DDPG.Actor(self.device, self.agent.state_space, self.agent.hidden_sizes[0], self.agent.action_space, self.learning_rate).to(self.device)
         self.agent.actor.load_state_dict(torch.load(save_path + '/' + self.model_name + Pendulum.ACTOR_MODEL_NAME + '.pt'))
-        self.agent.critic = Pendulum.DDPG.Critic(self.device, self.agent.state_space+self.agent.action_space, self.agent.hidden_sizes, self.agent.action_space, self.learning_rate).to(self.device)
+        self.agent.critic = Pendulum.DDPG.Critic(self.device, self.agent.state_space+self.agent.action_space, self.agent.hidden_sizes[1], self.agent.action_space, self.learning_rate).to(self.device)
         self.agent.critic.load_state_dict(torch.load(save_path + '/' + self.model_name + Pendulum.CRITIC_MODEL_NAME + '.pt'))

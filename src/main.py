@@ -12,7 +12,7 @@ import pandas as pd
 
 
 # A list of all parameters passed into the param dictionary
-PARAM_LIST = ["episodes", "hidden_sizes", "batch_size", "render_freq", "epsilon", "gamma", "tau"]
+PARAM_LIST = ["episodes", "hidden_sizes", "batch_size", "epochs", "render_freq", "epsilon", "gamma", "tau"]
 
 
 def CreateArgParser() -> argparse.ArgumentParser:
@@ -24,7 +24,7 @@ def CreateArgParser() -> argparse.ArgumentParser:
                     epilog='',
                     formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('--mode', choices=["test", "train"], required=True, help="Whether the model should be trained, or a previously trained model should be loaded.")
-    parser.add_argument('--model', choices=["Pendulum", "MountainCar"], required=True, help="What model should be run?")
+    parser.add_argument('--model', choices=["Pendulum", "MountainCar", "LunarLander"], required=True, help="What model should be run?")
     parser.add_argument('--compare', nargs=5, help="Only applicable if training. Check how the model changes as we vary a parameter.\n"
                         "You'll need to specify the parameter, the min parameter value, the max parameter value, and how many times we change the parameter and train.\n"
                         "Both the min and max are inclusive.\n"
@@ -36,15 +36,20 @@ def CreateArgParser() -> argparse.ArgumentParser:
     parser.add_argument('--episodes', type=int, default=None, help="How many episodes should the model train/test on? If not specified, a per-model default is used.")
     parser.add_argument('--hidden-sizes', dest="hidden_sizes", type=int, nargs='*', default=None, help="The number and size of each hidden layer. Will use model defaults if not specified.\n"
                         "Ex: --hidden_sizes 128 256 32    - This specifies that there are 3 hidden layers of those sizes.\n"
-                        "Ensure that testing and training calls use the same number of hidden sizes.")
+                        "Ensure that testing and training calls use the same number of hidden sizes. Only applies to primary network (ex actor not critic).")
     parser.add_argument('--batch-size', dest="batch_size", type=int, default=None, help="The size of training batches.")
+    parser.add_argument('--epochs', type=int, default=None, help="- LunarLander: The number of times to re-train on each episode.")
     parser.add_argument('--render-freq', dest="render_freq", type=int, default=None, help="How many training episodes between renderings.\n"
                         "Only usable during training. Training is not rendered by default.")
     parser.add_argument('--epsilon', type=float, default=None, help="- Pendulum: The std. dev. of the gaussian noise applied to actions.\n"
-                                                                    "- Mountain Car: The chance to choose a random action for exploration.")
-    parser.add_argument('--learning-rate', dest="learning_rate", type=float, default=None, help="The amount to update the model based on learning from the data.")
+                                                                    "- Mountain Car: The chance to choose a random action for exploration.\n"
+                                                                    "- Lunar Lander: The clipping limit for model difference. Higher values = bigger training jumps.")
+    parser.add_argument('--learning-rate', dest="learning_rate", type=float, nargs="*", default=None, help="The learning rate of the different networks in the model.\n"
+                        "- Pendulum: 1 = Actor, 2 = Critic\n"
+                        "- Mountain Car: 1 = DQN\n"
+                        "- Lunar Lander: 1 = Actor, 2 = Critic")
     parser.add_argument('--gamma', type=float, default=None, help="The discount factor for future rewards.")
-    parser.add_argument('--tau', type=float, default=None, help="The amount to update the target models.")
+    parser.add_argument('--tau', type=float, default=None, help="- Pendulum: The amount to update the target models.")
 
     return parser
 
@@ -98,7 +103,7 @@ if __name__ == "__main__":
     device = torch.device("cpu") if args.cpu else torch.device("cuda:0")
 
     # Create a dictionary of parameters to pass into the model
-    param_dict = {"model_name": args.model_name,"episodes": args.episodes, "hidden_sizes": args.hidden_sizes, "batch_size": args.batch_size, "render_freq": args.render_freq,
+    param_dict = {"model_name": args.model_name,"episodes": args.episodes, "hidden_sizes": args.hidden_sizes, "batch_size": args.batch_size, "epochs": args.epochs, "render_freq": args.render_freq,
                   "learning_rate": args.learning_rate, "gamma": args.gamma, "tau": args.tau, "epsilon": args.epsilon}
 
     # Find the chosen type of agent
@@ -107,6 +112,8 @@ if __name__ == "__main__":
         model_type = agents.Pendulum
     elif args.model == "MountainCar":
         model_type = agents.MountainCar
+    elif args.model == "LunarLander":
+        model_type = agents.LunarLander
 
     # Check if we picked a valid environment
     if model_type is None:
@@ -178,7 +185,6 @@ if __name__ == "__main__":
             plt.xlabel("Episode")
             plt.ylabel("Total Reward")
             plt.savefig(f"{os.getcwd() + model.SAVE_PATH}/{model.model_name}_reward_across_{parameter}.png")
-            plt.show()
 
         # Otherwise, just run the model once:
         else:
