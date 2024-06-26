@@ -54,7 +54,7 @@ class LunarLander(Agent):
     ACTOR_MODEL_NAME = "actor"
     CRITIC_MODEL_NAME = "critic"
 
-    DEFAULT_EPISODES = 10000
+    DEFAULT_EPISODES = 3500
     DEFAULT_BATCH_SIZE = 128
     DEFAULT_EPOCHS = 3
     DEFAULT_HIDDEN_SIZES = [[64,32,16], [64,32,16]]
@@ -276,8 +276,8 @@ class LunarLander(Agent):
         # Track the number of consecutive wins to exit early
         total_win_count = 0
         consecutive_wins = 0
-        total_recent_reward = -200*50
-        recent_rewards = [-200]*50
+        total_recent_reward = -200*10
+        recent_rewards = [-200]*10
 
         # Record the state and actions taken, and model outputs for each episode
         memories = []
@@ -287,7 +287,7 @@ class LunarLander(Agent):
 
             # Display the epsiode progress
             if self.verbose:
-                print(f"Episode {episode+1}  :  Average Recent Reward: {total_recent_reward/50:.2f}  :  Total Wins: {total_win_count}      ", end='\r')
+                print(f"Episode {episode+1}  :  Average Recent Reward: {total_recent_reward/10:.2f}  :  Total Wins: {total_win_count}      ", end='\r')
 
             # Only render episodes occasionally
             if self.render_freq:
@@ -341,7 +341,7 @@ class LunarLander(Agent):
                 consecutive_wins += 1
             else:
                 consecutive_wins = 0
-            if consecutive_wins ==  50:
+            if consecutive_wins ==  10:
                 print(f"Solved the Environment on episode {episode}\n")
                 break
                 
